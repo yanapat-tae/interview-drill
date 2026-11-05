@@ -1,12 +1,14 @@
 // app.js — screens and navigation.
-// Routes use the URL hash: #/home, #/list, #/practise/<id>, #/review, #/settings
+// Routes use the URL hash: #/home, #/list, #/practise/<id>, #/review, #/mock, #/stories, #/ask, #/settings
 
 import * as db from './db.js';
 import { parseAndValidate, slotParts, fillSlots, isUnfilled, CATEGORIES } from './data.js';
 import { tokenizeAnswer, hiddenSet } from './fade.js';
+import { glossaryMatches } from './glossary.js';
 import { todayStr, applyRating, mastery, isDue, todaysReview, summarize, DAYS_FOR_BOX } from './review.js';
+import * as mock from './mock.js';
 
-export const APP_VERSION = '0.1.0 (Phase 1)';
+export const APP_VERSION = '0.2.0 (Phase 2)';
 
 // ---------- App state (loaded from IndexedDB) ----------
 const state = {
@@ -16,12 +18,15 @@ const state = {
   session: null,      // today's review session { ids, index, results }
   practise: null,     // current practise screen { id, step, level, rated }
   flash: null,        // one-time message for the next render
+  mock: null,         // running mock interview
+  settings: { voiceURI: '', rate: 1 },
 };
 
 async function loadState() {
   state.content = (await db.kvGet('content')) || null;
   state.slots = (await db.kvGet('slots')) || state.content?.slots || {};
   state.progress = await db.getAllProgress();
+  state.settings = { ...state.settings, ...((await db.kvGet('settings')) || {}) };
 }
 
 const questions = () => state.content?.questions ?? [];
@@ -51,6 +56,65 @@ function slotText(text) {
   return slotParts(text, state.slots).map((p) =>
     p.unfilled ? h('mark', { class: 'unfilled', title: `Slot "${p.slot}" is not filled yet` }, p.text) : p.text);
 }
+
+/**
+ * Turn word tokens into DOM pieces.
+ * hidden: Set of word indexes to show as blanks (fade-out). gloss: Map(word index → glossary entry).
+ * A hidden glossary word stays a blank; it only turns amber after the user reveals it.
+ */
+function renderTokens(tokens, { hidden = null, gloss = new Map() } = {}) {
+  return tokens.map((t) => {
+    if (t.type === 'space') return t.text;
+    const g = gloss.get(t.index);
+    const unf = t.unfilled ? ' unfilled' : '';
+    const data = g ? { 'data-term': g.term, 'data-th': g.th } : {};
+    if (hidden?.has(t.index)) {
+      const blank = h('span', {
+        ...data, class: `blank${unf}`, role: 'button', tabindex: '0', 'aria-label': 'Hidden word. Tap to show.',
+        onclick: (e) => { e.stopPropagation(); reveal(e.currentTarget); },
+        onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); reveal(e.currentTarget); } },
+      }, t.core);
+      return [t.pre, blank, t.post];
+    }
+    const span = h('span', { ...data, class: `w${unf}${g ? ' gloss' : ''}`, role: g ? 'button' : null, tabindex: g ? '0' : null }, t.core);
+    return [t.pre, span, t.post];
+  });
+}
+
+/** One line of answer-style text: slots filled, unfilled highlighted, glossary terms in amber. */
+function richText(text) {
+  const { paragraphs, words } = tokenizeAnswer([text], state.slots);
+  return renderTokens(paragraphs[0], { gloss: glossaryMatches(words, state.content?.glossary) });
+}
+
+// ---------- Glossary popover ----------
+let popEl = null;
+function showGloss(el) {
+  if (!popEl) {
+    popEl = h('div', { class: 'gloss-pop', role: 'status', 'aria-live': 'polite' });
+    document.body.append(popEl);
+  }
+  popEl.replaceChildren(h('strong', null, el.dataset.term), h('span', { lang: 'th' }, el.dataset.th));
+  popEl.hidden = false;
+  const r = el.getBoundingClientRect();
+  const pw = popEl.offsetWidth, ph = popEl.offsetHeight;
+  const left = Math.max(12, Math.min(r.left + r.width / 2 - pw / 2, innerWidth - pw - 12));
+  let top = r.bottom + 8;
+  const limit = innerHeight - (document.querySelector('.tabbar')?.offsetHeight || 0) - 8;
+  if (top + ph > limit) top = r.top - ph - 8;
+  popEl.style.left = `${left + scrollX}px`;
+  popEl.style.top = `${top + scrollY}px`;
+}
+function hideGloss() { if (popEl) popEl.hidden = true; }
+
+document.addEventListener('click', (e) => {
+  const t = e.target.closest?.('.gloss');
+  if (t) showGloss(t); else hideGloss();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') hideGloss();
+  else if ((e.key === 'Enter' || e.key === ' ') && e.target.classList?.contains('gloss')) { e.preventDefault(); showGloss(e.target); }
+});
 
 const CATEGORY_LABEL = { core: 'Core', motivation: 'Motivation', behavioral: 'Behavioral', todo: 'To do' };
 const MASTERY_LABEL = { new: 'New', learning: 'Learning', mastered: 'Mastered' };
@@ -85,13 +149,17 @@ function render() {
   else if (route === 'list') view = viewList();
   else if (route === 'practise' && arg) view = viewPractiseSingle(decodeURIComponent(arg));
   else if (route === 'review') view = viewReview();
+  else if (route === 'mock') view = viewMock();
+  else if (route === 'stories') view = viewStories();
+  else if (route === 'ask') view = viewAsk();
   else if (route === 'settings') view = viewSettings();
   else view = viewHome();
 
+  hideGloss();
   main().replaceChildren(view);
+  const tab = { practise: 'list', review: 'home', mock: 'home', stories: 'home', ask: 'home' }[route] || route || 'home';
   for (const a of document.querySelectorAll('.tabbar a')) {
-    const active = a.dataset.route === (route || 'home') ||
-      (a.dataset.route === 'list' && route === 'practise');
+    const active = a.dataset.route === tab;
     a.classList.toggle('active', active);
     if (active) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
   }
@@ -125,10 +193,9 @@ function viewHome() {
       count ? `Start today's review (${count})` : 'All done for today'),
     h('div', { class: 'grid2' },
       h('a', { class: 'btn', href: '#/list' }, 'Practise one question'),
-      h('button', { class: 'btn', disabled: true, title: 'Coming in Phase 2' }, 'Mock interview'),
-      h('button', { class: 'btn', disabled: true, title: 'Coming in Phase 2' }, 'Stories'),
-      h('button', { class: 'btn', disabled: true, title: 'Coming in Phase 2' }, 'Questions to ask')),
-    h('p', { class: 'small muted center' }, 'Mock interview, Stories and Questions to ask arrive in Phase 2.'));
+      h('a', { class: 'btn', href: '#/mock' }, 'Mock interview'),
+      h('a', { class: 'btn', href: '#/stories' }, 'Stories'),
+      h('a', { class: 'btn', href: '#/ask' }, 'Questions to ask')));
 }
 
 function stat(n, label, cls) {
@@ -216,7 +283,7 @@ function stepKeyPoints(q, setStep) {
   return h('div', { class: 'stack' },
     h('div', { class: 'card' },
       h('h2', null, 'Key points'),
-      q.keyPoints.length ? h('ol', { class: 'points' }, q.keyPoints.map((k) => h('li', null, slotText(k))))
+      q.keyPoints.length ? h('ol', { class: 'points' }, q.keyPoints.map((k) => h('li', null, richText(k))))
         : h('p', { class: 'muted' }, 'No key points yet.')),
     stories.map(storyCard),
     q.status === 'todo' || q.answer.length === 0
@@ -225,13 +292,17 @@ function stepKeyPoints(q, setStep) {
       : h('button', { class: 'btn primary big', onclick: () => setStep(2) }, 'Practise full answer'));
 }
 
-function storyCard(s) {
+function storyCard(s, usedIn = null) {
   return h('div', { class: 'card story' },
     h('div', { class: 'story-head' }, h('strong', null, s.title), s.when ? h('span', { class: 'small muted' }, s.when) : null),
     h('dl', null,
-      h('dt', null, 'Situation'), h('dd', null, slotText(s.situation)),
-      h('dt', null, 'Action'), h('dd', null, slotText(s.action)),
-      h('dt', null, 'Result'), h('dd', null, slotText(s.result))));
+      h('dt', null, 'Situation'), h('dd', null, richText(s.situation)),
+      h('dt', null, 'Action'), h('dd', null, richText(s.action)),
+      h('dt', null, 'Result'), h('dd', null, richText(s.result))),
+    usedIn ? h('div', { class: 'used-in' },
+      h('span', { class: 'small muted' }, 'Used in:'),
+      usedIn.length ? h('ul', null, usedIn.map((q) => h('li', null, h('a', { href: `#/practise/${encodeURIComponent(q.id)}` }, slotText(q.question)))))
+        : h('span', { class: 'small muted' }, ' no questions yet')) : null);
 }
 
 function stepFade(q, setStep, rerender) {
@@ -239,7 +310,7 @@ function stepFade(q, setStep, rerender) {
   if (q.status === 'todo' || q.answer.length === 0) {
     return h('div', { class: 'stack' },
       h('div', { class: 'card note warn' }, h('strong', null, 'No answer yet. '), 'Ideas:',
-        h('ul', { class: 'points' }, q.keyPoints.map((k) => h('li', null, slotText(k))))),
+        h('ul', { class: 'points' }, q.keyPoints.map((k) => h('li', null, richText(k))))),
       h('button', { class: 'btn primary big', onclick: () => setStep(3) }, 'Rate'));
   }
 
@@ -252,17 +323,8 @@ function stepFade(q, setStep, rerender) {
       onclick: () => { ps.level = l; rerender(); },
     }, `${l * 25}%`)));
 
-  const text = h('div', { class: 'answer' }, paragraphs.map((tokens) => h('p', null, tokens.map((t) => {
-    if (t.type === 'space') return t.text;
-    const cls = t.unfilled ? ' unfilled' : '';
-    if (!hidden.has(t.index)) return [t.pre, h('span', { class: `w${cls}` }, t.core), t.post];
-    const blank = h('span', {
-      class: `blank${cls}`, role: 'button', tabindex: '0', 'aria-label': 'Hidden word. Tap to show.',
-      onclick: (e) => reveal(e.currentTarget),
-      onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); reveal(e.currentTarget); } },
-    }, t.core);
-    return [t.pre, blank, t.post];
-  }))));
+  const gloss = glossaryMatches(words, state.content.glossary);
+  const text = h('div', { class: 'answer' }, paragraphs.map((tokens) => h('p', null, renderTokens(tokens, { hidden, gloss }))));
 
   return h('div', { class: 'stack' },
     h('div', { class: 'card stack' },
@@ -275,10 +337,15 @@ function stepFade(q, setStep, rerender) {
 }
 
 function reveal(el) {
+  hideGloss();
   el.classList.replace('blank', 'revealed');
-  el.removeAttribute('role');
-  el.removeAttribute('tabindex');
   el.removeAttribute('aria-label');
+  if (el.dataset.term) {
+    el.classList.add('gloss'); // now visible → amber, tap again for the Thai meaning
+  } else {
+    el.removeAttribute('role');
+    el.removeAttribute('tabindex');
+  }
 }
 
 function stepRate(q, rerender) {
@@ -360,6 +427,269 @@ function viewReviewDone(s) {
     h('button', { class: 'btn primary big', onclick: () => { state.session = null; go('#/home'); } }, 'Back to Home'));
 }
 
+// ---------- Mock interview ----------
+// Flow per question: "ask" (question read aloud, timer runs, optional recording)
+// → "review" (time, playback, rate 1–3) → next question … → "done" (summary).
+let mockTimer = null;   // setInterval id for the timer display
+let stopSpeech = null;  // function that stops the current speech
+
+function endMock() {
+  if (mockTimer) { clearInterval(mockTimer); mockTimer = null; }
+  if (stopSpeech) { stopSpeech(); stopSpeech = null; }
+  const m = state.mock;
+  if (!m) return;
+  m.recorder?.cancel();
+  for (const r of m.results) if (r.audioUrl) URL.revokeObjectURL(r.audioUrl);
+  if (m.audioUrl && !m.results.some((r) => r.audioUrl === m.audioUrl)) URL.revokeObjectURL(m.audioUrl);
+  state.mock = null;
+}
+
+const mockPool = () => questions().filter((q) => q.status !== 'todo' && q.answer.length > 0);
+
+function viewMock() {
+  const m = state.mock;
+  if (!m) return viewMockIntro();
+  if (m.phase === 'done') return viewMockSummary(m);
+  const item = m.items[m.index];
+  return m.phase === 'ask' ? viewMockAsk(m, item) : viewMockReview(m, item);
+}
+
+function viewMockIntro() {
+  const n = Math.min(mock.MOCK_SIZE, mockPool().length);
+  return h('section', { class: 'stack' },
+    h('h1', null, 'Mock interview'),
+    h('div', { class: 'card stack' },
+      h('p', null, `${n} questions, read aloud. Questions you find hard come up more often. Sometimes a follow-up question is added.`),
+      h('p', { class: 'small muted' }, 'Answer out loud. The timer starts after the question is read. It turns amber after the target time and red 30 seconds later.'),
+      mock.ttsSupported() ? null : h('p', { class: 'small warn-text' }, 'This browser cannot read aloud. The question is shown as text only.'),
+      mock.recordingSupported() ? h('p', { class: 'small muted' }, 'Optional: tap Record to hear yourself afterwards. Only the last recording per question is kept, on this device.')
+        : h('p', { class: 'small warn-text' }, 'Recording is not available in this browser.'),
+      h('p', { class: 'small muted' }, 'On iPhone: turn the silent switch off to hear the question.')),
+    h('button', { class: 'btn primary big', disabled: n === 0, onclick: startMock }, n ? 'Start mock interview' : 'No questions with answers yet'));
+}
+
+function startMock() {
+  endMock();
+  state.mock = { items: mock.pickMockItems(questions(), state.progress), index: 0, results: [] };
+  beginMockItem(); // speak inside the tap, so iPhone allows the audio
+  render();
+}
+
+function beginMockItem() {
+  const m = state.mock;
+  Object.assign(m, { phase: 'ask', startedAt: null, seconds: 0, blob: null, audioUrl: null, recorder: null, recordError: null, busy: false });
+  readQuestionAloud();
+}
+
+function readQuestionAloud() {
+  const m = state.mock;
+  const item = m.items[m.index];
+  if (stopSpeech) stopSpeech();
+  stopSpeech = mock.speak(fillSlots(item.text, state.slots), state.settings, () => {
+    stopSpeech = null;
+    if (state.mock === m && m.phase === 'ask' && !m.startedAt) startMockTimer();
+  });
+}
+
+function startMockTimer() {
+  const m = state.mock;
+  m.startedAt = performance.now();
+  if (mockTimer) clearInterval(mockTimer);
+  mockTimer = setInterval(updateMockTimer, 250);
+  updateMockTimer();
+}
+
+function mockElapsed(m) { return m.startedAt ? (performance.now() - m.startedAt) / 1000 : 0; }
+
+// Updates only the timer text (no full re-render), 4 times per second.
+function updateMockTimer() {
+  const m = state.mock;
+  const el = document.getElementById('mock-timer');
+  if (!m || m.phase !== 'ask' || !el) return;
+  const item = m.items[m.index];
+  const sec = mockElapsed(m);
+  el.textContent = mock.formatTime(sec);
+  el.dataset.level = mock.timerLevel(sec, item.targetSeconds);
+  const st = document.getElementById('mock-status');
+  if (st) st.textContent = m.startedAt ? 'Answer now' : 'Listening…';
+  if (m.startedAt) document.getElementById('mock-start-now')?.remove();
+}
+
+function viewMockAsk(m, item) {
+  const sec = mockElapsed(m);
+  const recording = !!m.recorder;
+  return h('section', { class: 'stack' },
+    mockHeader(m),
+    h('div', { class: 'card question' },
+      h('div', { class: 'meta' },
+        item.followUp ? h('span', { class: 'badge s-new' }, 'Follow-up') : h('span', { class: 'badge' }, CATEGORY_LABEL[findQuestion(item.qid)?.category] || ''),
+        h('span', { class: 'small muted' }, `target ${item.targetSeconds} s`)),
+      h('p', { class: 'qbig' }, slotText(item.text))),
+    h('div', { class: 'card timer-card' },
+      h('div', { id: 'mock-timer', class: 'timer', 'data-level': mock.timerLevel(sec, item.targetSeconds), role: 'timer', 'aria-live': 'off' }, mock.formatTime(sec)),
+      h('div', { id: 'mock-status', class: 'small muted' }, m.startedAt ? 'Answer now' : 'Listening…'),
+      m.startedAt ? null : h('button', { id: 'mock-start-now', class: 'btn small-btn', onclick: () => { if (stopSpeech) { stopSpeech(); stopSpeech = null; } startMockTimer(); render(); } }, 'Start timer now')),
+    h('div', { class: 'grid2' },
+      h('button', { class: 'btn', onclick: readQuestionAloud }, 'Read again'),
+      mock.recordingSupported()
+        ? h('button', { class: `btn ${recording ? 'recording' : ''}`, onclick: toggleRecord, disabled: m.busy, 'aria-pressed': String(recording) },
+          recording ? [h('span', { class: 'rec-dot', 'aria-hidden': 'true' }), 'Stop recording'] : (m.blob ? 'Record again' : 'Record'))
+        : h('button', { class: 'btn', disabled: true }, 'No recording')),
+    m.blob && !recording ? h('p', { class: 'small muted center' }, 'Recorded. You can play it back after you finish.') : null,
+    m.recordError ? h('div', { class: 'card note warn', role: 'alert' }, m.recordError) : null,
+    h('button', { class: 'btn primary big', onclick: finishAnswer, disabled: m.busy }, 'Done answering'));
+}
+
+function mockHeader(m) {
+  return h('div', { class: 'row between' },
+    h('a', { class: 'back', href: '#/home' }, '‹ End'),
+    h('span', { class: 'small muted' }, `Question ${m.index + 1} of ${m.items.length}`));
+}
+
+async function toggleRecord() {
+  const m = state.mock;
+  if (!m || m.busy) return;
+  m.busy = true;
+  if (m.recorder) {
+    const rec = m.recorder;
+    m.recorder = null;
+    m.blob = await rec.stop();
+  } else {
+    if (stopSpeech) { stopSpeech(); stopSpeech = null; }
+    if (!m.startedAt) startMockTimer();
+    try {
+      m.recorder = await mock.startRecording();
+      m.recordError = null;
+    } catch (e) {
+      m.recordError = `Microphone not available (${e.name || 'Error'}: ${e.message}). Check that the microphone is allowed for this site.`;
+    }
+  }
+  m.busy = false;
+  if (state.mock === m) render();
+}
+
+async function finishAnswer() {
+  const m = state.mock;
+  if (!m || m.busy) return;
+  m.busy = true;
+  const item = m.items[m.index];
+  if (stopSpeech) { stopSpeech(); stopSpeech = null; }
+  m.seconds = mockElapsed(m);
+  if (mockTimer) { clearInterval(mockTimer); mockTimer = null; }
+  if (m.recorder) { const rec = m.recorder; m.recorder = null; m.blob = await rec.stop(); }
+  if (m.blob && m.blob.size) {
+    m.audioUrl = URL.createObjectURL(m.blob);
+    try {
+      await db.putRecording({ id: item.key, qid: item.qid, data: await m.blob.arrayBuffer(), mimeType: m.blob.type, date: todayStr(), seconds: Math.round(m.seconds) });
+    } catch (e) {
+      m.recordError = `The recording could not be saved (${e.message}). You can still play it now.`;
+    }
+  }
+  m.busy = false;
+  m.phase = 'review';
+  if (state.mock === m) render();
+}
+
+function viewMockReview(m, item) {
+  const level = mock.timerLevel(m.seconds, item.targetSeconds);
+  const q = findQuestion(item.qid);
+  const btn = (rating, label, cls) => h('button', { class: `btn rate ${cls}`, onclick: () => rateMock(rating) }, h('span', { class: 'rate-label' }, label));
+  return h('section', { class: 'stack' },
+    mockHeader(m),
+    h('div', { class: 'card question' },
+      item.followUp ? h('div', { class: 'meta' }, h('span', { class: 'badge s-new' }, 'Follow-up')) : null,
+      h('p', { class: 'qbig' }, slotText(item.text)),
+      h('p', null, 'Your time: ', h('strong', { class: `time-${level}` }, mock.formatTime(m.seconds)), h('span', { class: 'muted' }, ` · target ${mock.formatTime(item.targetSeconds)}`))),
+    m.audioUrl ? h('div', { class: 'card stack' }, h('span', { class: 'small muted' }, 'Your answer'), h('audio', { controls: true, src: m.audioUrl, preload: 'auto' })) : null,
+    m.recordError ? h('div', { class: 'card note warn', role: 'alert' }, m.recordError) : null,
+    item.followUp && item.hint ? h('div', { class: 'card' }, h('span', { class: 'small muted' }, 'Hint: '), item.hint) : null,
+    !item.followUp && q?.keyPoints.length ? h('details', { class: 'card' }, h('summary', null, 'Check key points'),
+      h('ol', { class: 'points' }, q.keyPoints.map((k) => h('li', null, richText(k))))) : null,
+    h('p', { class: 'muted center' }, 'How did it go?'),
+    btn(1, "Couldn't", 'r1'), btn(2, 'With hints', 'r2'), btn(3, 'Easily', 'r3'));
+}
+
+function rateMock(rating) {
+  const m = state.mock;
+  const item = m.items[m.index];
+  m.results.push({ key: item.key, text: item.text, followUp: item.followUp, seconds: m.seconds, target: item.targetSeconds, rating, audioUrl: m.audioUrl });
+
+  // Mock ratings also count for spaced review (follow-ups do not have their own box).
+  if (!item.followUp && findQuestion(item.qid)) {
+    const p = applyRating(item.qid, state.progress.get(item.qid), rating, todayStr());
+    state.progress.set(item.qid, p);
+    db.putProgress(p).catch((e) => alert(`Could not save progress: ${e.message}`));
+  }
+
+  m.index++;
+  if (m.index >= m.items.length) m.phase = 'done';
+  else beginMockItem(); // speaks the next question inside this tap
+  render();
+  window.scrollTo(0, 0);
+}
+
+function viewMockSummary(m) {
+  const label = { 1: "Couldn't", 2: 'With hints', 3: 'Easily' };
+  const total = m.results.reduce((s, r) => s + r.seconds, 0);
+  return h('section', { class: 'stack' },
+    h('h1', null, 'Mock interview done'),
+    h('p', { class: 'muted' }, `${m.results.length} answers · total ${mock.formatTime(total)}`),
+    h('ul', { class: 'qlist' }, m.results.map((r) => h('li', { class: 'card stack' },
+      h('span', null, r.followUp ? h('span', { class: 'badge s-new' }, 'Follow-up') : null, r.followUp ? ' ' : null, slotText(r.text)),
+      h('span', { class: 'badges' },
+        h('span', { class: `badge time-${mock.timerLevel(r.seconds, r.target)}` }, `${mock.formatTime(r.seconds)} / ${mock.formatTime(r.target)}`),
+        h('span', { class: `badge r${r.rating}` }, label[r.rating])),
+      r.audioUrl ? h('audio', { controls: true, src: r.audioUrl, preload: 'none' }) : null))),
+    h('div', { class: 'grid2' },
+      h('button', { class: 'btn', onclick: startMock }, 'New mock'),
+      h('a', { class: 'btn primary', href: '#/home' }, 'Back to Home')));
+}
+
+// ---------- Stories ----------
+function viewStories() {
+  const stories = state.content.stories;
+  return h('section', { class: 'stack' },
+    h('h1', null, 'Stories'),
+    stories.length
+      ? stories.map((s) => storyCard(s, questions().filter((q) => q.storyIds.includes(s.id))))
+      : h('div', { class: 'card muted' }, 'No stories in this file.'));
+}
+
+// ---------- Questions to ask ----------
+function viewAsk() {
+  const list = state.content.questionsToAsk;
+  const cats = [...new Set(list.map((a) => a.category))];
+  return h('section', { class: 'stack' },
+    h('h1', null, 'Questions to ask'),
+    list.length ? cats.map((c) => h('div', { class: 'stack' },
+      h('h2', null, c),
+      h('ul', { class: 'qlist' }, list.filter((a) => a.category === c).map((a) => h('li', { class: 'card ask' },
+        h('span', null, slotText(a.question)),
+        a.note ? h('span', { class: 'small muted' }, a.note) : null)))))
+      : h('div', { class: 'card muted' }, 'No questions in this file.'));
+}
+
+// ---------- Voice settings ----------
+function fillVoiceSelect(select) {
+  const voices = mock.englishVoices();
+  const current = state.settings.voiceURI;
+  select.replaceChildren(
+    h('option', { value: '' }, voices.length ? 'Automatic (English)' : 'Default voice'),
+    voices.map((v) => h('option', { value: v.voiceURI, selected: v.voiceURI === current }, `${v.name} (${v.lang})`)));
+}
+
+async function saveSettings(patch) {
+  state.settings = { ...state.settings, ...patch };
+  await db.kvSet('settings', state.settings);
+}
+
+if (mock.ttsSupported()) {
+  speechSynthesis.addEventListener?.('voiceschanged', () => {
+    const sel = document.getElementById('voice-select');
+    if (sel) fillVoiceSelect(sel);
+  });
+}
+
 // ---------- Settings ----------
 function viewSettings() {
   const slotKeys = Object.keys(state.slots);
@@ -404,10 +734,41 @@ function viewSettings() {
       h('p', { class: 'small muted' }, 'Importing replaces the questions but keeps your practice progress.'),
       sampleButton('Load sample data'),
       importMessages()),
+    voiceCard(),
     h('div', { class: 'card stack' },
-      h('h2', null, 'Progress'),
-      h('button', { class: 'btn danger', onclick: resetProgress }, 'Reset progress')),
+      h('h2', null, 'Progress & recordings'),
+      h('button', { class: 'btn danger', onclick: resetProgress }, 'Reset progress'),
+      recordingsRow()),
     h('p', { class: 'small muted center' }, `Interview Drill ${APP_VERSION}`));
+}
+
+function voiceCard() {
+  const select = h('select', { id: 'voice-select', onchange: (e) => saveSettings({ voiceURI: e.target.value }) });
+  fillVoiceSelect(select);
+  const rateOut = h('output', { for: 'rate-input' }, `${Number(state.settings.rate).toFixed(1)}×`);
+  const rate = h('input', { id: 'rate-input', type: 'range', min: '0.6', max: '1.4', step: '0.1', value: String(state.settings.rate),
+    oninput: (e) => { rateOut.textContent = `${Number(e.target.value).toFixed(1)}×`; },
+    onchange: (e) => saveSettings({ rate: Number(e.target.value) }) });
+  return h('div', { class: 'card stack' },
+    h('h2', null, 'Voice'),
+    mock.ttsSupported() ? null : h('p', { class: 'small warn-text' }, 'This browser cannot read aloud.'),
+    h('label', { class: 'field', for: 'voice-select' }, h('span', null, 'Voice'), select),
+    h('label', { class: 'field', for: 'rate-input' }, h('span', null, 'Speech rate ', rateOut), rate),
+    h('button', { class: 'btn', onclick: () => mock.speak('What is your greatest strength?', state.settings) }, 'Test voice'));
+}
+
+function recordingsRow() {
+  const info = h('span', { class: 'small muted' }, 'Counting recordings…');
+  db.countRecordings().then((n) => { info.textContent = `${n} recording${n === 1 ? '' : 's'} saved on this device.`; })
+    .catch(() => { info.textContent = ''; });
+  return [info, h('button', { class: 'btn danger', onclick: deleteRecordings }, 'Delete all recordings')];
+}
+
+async function deleteRecordings() {
+  if (!confirm('Delete all saved recordings? This cannot be undone.')) return;
+  await db.clearRecordings();
+  state.flash = { text: 'All recordings deleted.', kind: 'ok' };
+  render();
 }
 
 async function resetProgress() {
@@ -469,6 +830,7 @@ async function importText(text) {
   state.slots = { ...data.slots };
   state.session = null;
   state.practise = null;
+  endMock();
   const kept = data.questions.filter((q) => state.progress.has(q.id)).length;
   lastImport = {
     ok: true, errors: [], warnings: result.warnings,
@@ -492,7 +854,12 @@ function importMessages() {
 }
 
 // ---------- Start ----------
-window.addEventListener('hashchange', () => { lastImport = null; render(); window.scrollTo(0, 0); });
+window.addEventListener('hashchange', () => {
+  lastImport = null;
+  if (state.mock && !location.hash.startsWith('#/mock')) endMock(); // leaving stops speech, timer and microphone
+  render();
+  window.scrollTo(0, 0);
+});
 
 (async function start() {
   try {

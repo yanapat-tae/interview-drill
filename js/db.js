@@ -64,3 +64,8 @@ export const clearProgress = () => run(['progress'], 'readwrite', (s) => { s.pro
 export async function requestPersistence() {
   try { if (navigator.storage?.persist) await navigator.storage.persist(); } catch { /* ignore */ }
 }
+
+// ---- Recordings (mock interview). Audio is stored as ArrayBuffer + mimeType (safest on iOS). ----
+export const putRecording = (r) => run(['recordings'], 'readwrite', (s) => { s.recordings.put(r); });
+export const countRecordings = () => run(['recordings'], 'readonly', (s) => s.recordings.count());
+export const clearRecordings = () => run(['recordings'], 'readwrite', (s) => { s.recordings.clear(); });

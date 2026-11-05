@@ -20,12 +20,12 @@ export function isFunctionWord(core) {
  * Turn answer paragraphs into tokens.
  * Returns { paragraphs: [[token...]...], words: [wordToken...] }
  * token = { type:'space', text } or
- *         { type:'word', pre, core, post, unfilled, index }
+ *         { type:'word', pre, core, post, unfilled, index, para }
  * `pre`/`post` are punctuation that always stays visible; `core` is the hideable word.
  */
 export function tokenizeAnswer(answer, slots) {
   const words = [];
-  const paragraphs = answer.map((para) => {
+  const paragraphs = answer.map((para, pi) => {
     const tokens = [];
     for (const part of slotParts(para, slots)) {
       for (const piece of part.text.split(/(\s+)/)) {
@@ -33,7 +33,7 @@ export function tokenizeAnswer(answer, slots) {
         if (/^\s+$/.test(piece)) { tokens.push({ type: 'space', text: piece }); continue; }
         const m = piece.match(/^([^\p{L}\p{N}]*)(.*?)([^\p{L}\p{N}]*)$/u);
         if (!m[2]) { tokens.push({ type: 'space', text: piece }); continue; } // e.g. "→" or "—"
-        const w = { type: 'word', pre: m[1], core: m[2], post: m[3], unfilled: !!part.unfilled, index: words.length };
+        const w = { type: 'word', pre: m[1], core: m[2], post: m[3], unfilled: !!part.unfilled, index: words.length, para: pi };
         words.push(w);
         tokens.push(w);
       }

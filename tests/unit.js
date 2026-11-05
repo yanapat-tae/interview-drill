@@ -2,6 +2,8 @@
 import { parseAndValidate, validateData, fillSlots, slotParts, isUnfilled } from '../js/data.js';
 import { tokenizeAnswer, hiddenSet, isFunctionWord, LEVEL_SHARE } from '../js/fade.js';
 import { applyRating, addDays, todaysReview, mastery } from '../js/review.js';
+import { glossaryMatches } from '../js/glossary.js';
+import { pickMockItems, timerLevel, formatTime, weightOf } from '../js/mock.js';
 
 const results = [];
 function test(name, fn) {
@@ -93,6 +95,57 @@ test("today's review: due items + up to 3 new, no todo", () => {
   eq(todaysReview(qs, prog, T), { due: ['a'], fresh: ['c', 'd', 'e'], all: ['a', 'c', 'd', 'e'] });
   prog.set('c', { id: 'c', box: 2, due: '2026-11-06', firstRated: T }); // one new started today
   eq(todaysReview(qs, prog, T).fresh, ['d', 'e']);
+});
+
+// ---------- glossary.js ----------
+const glossWords = (text) => tokenizeAnswer(Array.isArray(text) ? text : [text], {}).words;
+test('glossary: case-insensitive whole words', () => {
+  const w = glossWords('I Troubleshoot daily; troubleshooting is different.');
+  const m = glossaryMatches(w, sample.glossary);
+  eq([...m.keys()].map((i) => w[i].core), ['Troubleshoot']);
+});
+test('glossary: hyphenated term and punctuation', () => {
+  const w = glossWords('My detail-oriented approach.');
+  eq([...glossaryMatches(w, sample.glossary).keys()].map((i) => w[i].core), ['detail-oriented']);
+});
+test('glossary: phrases match consecutive words, longer phrase wins, not across paragraphs', () => {
+  const g = [{ term: 'production line', th: 'สายการผลิต' }, { term: 'line', th: 'เส้น' }];
+  const w = glossWords(['The Production Line stopped. One line.', 'production', 'line']);
+  const m = glossaryMatches(w, g);
+  eq([...m.entries()].map(([i, e]) => `${w[i].core}=${e.term}`), ['Production=production line', 'Line=production line', 'line=line', 'line=line']);
+});
+test('glossary words in sample answers are found', () => {
+  const ws = tokenizeAnswer(sample.questions[2].answer, sample.slots).words;
+  const terms = new Set([...glossaryMatches(ws, sample.glossary).values()].map((g) => g.term));
+  eq([...terms].sort(), ['prioritize', 'troubleshoot']);
+});
+
+// ---------- mock.js ----------
+function seeded(seed) { let a = seed; return () => { a = (a * 1664525 + 1013904223) % 4294967296; return a / 4294967296; }; }
+const manyQs = Array.from({ length: 8 }, (_, i) => ({ id: `q${i}`, status: 'new', question: `Q${i}?`, answer: ['x'], targetSeconds: 60, followUps: i === 0 ? [{ q: 'Why?', hint: 'h' }] : [] }))
+  .concat([{ id: 'todo', status: 'todo', question: 'T?', answer: [], targetSeconds: 30, followUps: [] }]);
+test('mock: 5 different questions, never todo', () => {
+  for (let s = 1; s < 30; s++) {
+    const items = pickMockItems(manyQs, new Map(), seeded(s), 5, 0).filter((i) => !i.followUp);
+    eq(items.length, 5); eq(new Set(items.map((i) => i.qid)).size, 5); ok(!items.some((i) => i.qid === 'todo'));
+  }
+});
+test('mock: follow-up comes right after its question', () => {
+  const items = pickMockItems(manyQs, new Map(), seeded(7), 8, 1);
+  const fi = items.findIndex((i) => i.followUp);
+  ok(fi > 0, 'no follow-up'); eq(items[fi - 1].qid, items[fi].qid); eq(items[fi].text, 'Why?'); eq(items[fi].targetSeconds, 30);
+});
+test('mock: weak questions are picked more often', () => {
+  const qs = manyQs.slice(0, 8);
+  const prog = new Map(qs.slice(0, 4).map((q) => [q.id, { box: 5 }]).concat(qs.slice(4).map((q) => [q.id, { box: 1, lastRating: 1 }])));
+  let weak = 0, strong = 0; const r = seeded(42);
+  for (let k = 0; k < 400; k++) for (const it of pickMockItems(qs, prog, r, 1, 0)) (prog.get(it.qid).box === 1 ? weak++ : strong++);
+  ok(weak > strong * 3, `weak ${weak} strong ${strong}`);
+  eq([weightOf(undefined), weightOf({ box: 1 }), weightOf({ box: 1, lastRating: 1 }), weightOf({ box: 5 })], [3, 5, 7, 1]);
+});
+test('mock: timer colours', () => {
+  eq([timerLevel(60, 60), timerLevel(61, 60), timerLevel(90, 60), timerLevel(91, 60)], ['normal', 'amber', 'amber', 'red']);
+  eq([formatTime(0), formatTime(65.7), formatTime(600)], ['0:00', '1:05', '10:00']);
 });
 
 // ---------- report ----------
