@@ -1,14 +1,14 @@
 // app.js — screens and navigation.
-// Routes use the URL hash: #/home, #/list, #/practise/<id>, #/review, #/mock, #/stories, #/ask, #/settings
+// Routes use the URL hash: #/home, #/list, #/practise/<id>, #/review, #/mock, #/stories, #/ask, #/settings, #/install
 
 import * as db from './db.js';
-import { parseAndValidate, slotParts, fillSlots, isUnfilled, CATEGORIES } from './data.js';
+import { parseImport, makeBackup, backupFileName, slotParts, fillSlots, isUnfilled, CATEGORIES } from './data.js';
 import { tokenizeAnswer, hiddenSet } from './fade.js';
 import { glossaryMatches } from './glossary.js';
 import { todayStr, applyRating, mastery, isDue, todaysReview, summarize, DAYS_FOR_BOX } from './review.js';
 import * as mock from './mock.js';
 
-export const APP_VERSION = '0.2.0 (Phase 2)';
+export const APP_VERSION = '0.3.0'; // keep in step with CACHE_VERSION in sw.js
 
 // ---------- App state (loaded from IndexedDB) ----------
 const state = {
@@ -20,6 +20,7 @@ const state = {
   flash: null,        // one-time message for the next render
   mock: null,         // running mock interview
   settings: { voiceURI: '', rate: 1 },
+  lastBackup: null,   // "YYYY-MM-DD" of the last Export backup
 };
 
 async function loadState() {
@@ -27,7 +28,10 @@ async function loadState() {
   state.slots = (await db.kvGet('slots')) || state.content?.slots || {};
   state.progress = await db.getAllProgress();
   state.settings = { ...state.settings, ...((await db.kvGet('settings')) || {}) };
+  state.lastBackup = (await db.kvGet('lastBackup')) || null;
 }
+
+const isStandalone = () => navigator.standalone === true || matchMedia('(display-mode: standalone)').matches;
 
 const questions = () => state.content?.questions ?? [];
 const findQuestion = (id) => questions().find((q) => q.id === id);
@@ -145,7 +149,8 @@ function go(hash) {
 function render() {
   const [, route, arg] = (location.hash || '#/home').split('/');
   let view;
-  if (!state.content && route !== 'settings') view = viewWelcome();
+  if (route === 'install') view = viewInstall();
+  else if (!state.content && route !== 'settings') view = viewWelcome();
   else if (route === 'list') view = viewList();
   else if (route === 'practise' && arg) view = viewPractiseSingle(decodeURIComponent(arg));
   else if (route === 'review') view = viewReview();
@@ -157,7 +162,7 @@ function render() {
 
   hideGloss();
   main().replaceChildren(view);
-  const tab = { practise: 'list', review: 'home', mock: 'home', stories: 'home', ask: 'home' }[route] || route || 'home';
+  const tab = { practise: 'list', review: 'home', mock: 'home', stories: 'home', ask: 'home', install: 'settings' }[route] || route || 'home';
   for (const a of document.querySelectorAll('.tabbar a')) {
     const active = a.dataset.route === tab;
     a.classList.toggle('active', active);
@@ -174,7 +179,8 @@ function viewWelcome() {
       h('p', null, 'Learn the key points of your interview answers, then practise until they feel natural. Load your answer file to start.'),
       h('div', { class: 'stack' }, importButton('Import file'), sampleButton('Try sample data')),
       h('p', { class: 'small muted' }, 'Your data stays on this device.')),
-    importMessages());
+    importMessages(),
+    isStandalone() ? null : h('a', { class: 'btn', href: '#/install' }, 'How to install on iPhone'));
 }
 
 // ---------- Home ----------
@@ -195,7 +201,20 @@ function viewHome() {
       h('a', { class: 'btn', href: '#/list' }, 'Practise one question'),
       h('a', { class: 'btn', href: '#/mock' }, 'Mock interview'),
       h('a', { class: 'btn', href: '#/stories' }, 'Stories'),
-      h('a', { class: 'btn', href: '#/ask' }, 'Questions to ask')));
+      h('a', { class: 'btn', href: '#/ask' }, 'Questions to ask')),
+    backupReminder(),
+    isStandalone() ? null : h('p', { class: 'small center' }, h('a', { href: '#/install' }, 'Install on iPhone (works offline)')));
+}
+
+const daysSince = (dateStr) => Math.round((Date.parse(todayStr()) - Date.parse(dateStr)) / 86400000);
+
+/** Small card on Home when there is progress but no backup in the last 7 days. */
+function backupReminder() {
+  if (state.progress.size === 0) return null;
+  if (state.lastBackup && daysSince(state.lastBackup) < 7) return null;
+  return h('div', { class: 'card note warn stack' },
+    h('span', null, state.lastBackup ? `Last backup: ${daysSince(state.lastBackup)} days ago.` : 'No backup of your progress yet.'),
+    h('button', { class: 'btn', onclick: exportBackup }, 'Export backup'));
 }
 
 function stat(n, label, cls) {
@@ -734,12 +753,96 @@ function viewSettings() {
       h('p', { class: 'small muted' }, 'Importing replaces the questions but keeps your practice progress.'),
       sampleButton('Load sample data'),
       importMessages()),
+    state.content ? h('div', { class: 'card stack' },
+      h('h2', null, 'Backup'),
+      h('p', { class: 'small muted' }, 'Saves your questions, slot values and progress in one file. Choose "Save to Files" (iCloud Drive) on iPhone. To restore, use Import file. Recordings are not included.'),
+      h('button', { class: 'btn primary', onclick: exportBackup }, 'Export backup'),
+      h('p', { class: 'small muted' }, state.lastBackup ? `Last backup: ${state.lastBackup}` : 'No backup yet.')) : null,
     voiceCard(),
     h('div', { class: 'card stack' },
       h('h2', null, 'Progress & recordings'),
       h('button', { class: 'btn danger', onclick: resetProgress }, 'Reset progress'),
       recordingsRow()),
-    h('p', { class: 'small muted center' }, `Interview Drill ${APP_VERSION}`));
+    h('a', { class: 'btn', href: '#/install' }, 'Install on iPhone · offline help'),
+    h('p', { class: 'small muted center' }, `Interview Drill ${APP_VERSION}${isStandalone() ? ' · Home Screen app' : ''}`));
+}
+
+// ---------- Export backup ----------
+// iPhone: opens the Share sheet → "Save to Files". Other browsers: downloads the file.
+async function exportBackup() {
+  const today = todayStr();
+  const name = backupFileName(today);
+  const backup = makeBackup({ content: state.content, slots: state.slots, settings: state.settings, progress: state.progress, appVersion: APP_VERSION });
+  const json = JSON.stringify(backup, null, 2);
+  const file = new File([json], name, { type: 'application/json' });
+
+  let shared = false;
+  if (navigator.canShare?.({ files: [file] })) {
+    try {
+      await navigator.share({ files: [file] });
+      shared = true;
+    } catch (e) {
+      if (e.name === 'AbortError') return; // user closed the Share sheet: nothing saved
+    }
+  }
+  if (!shared) {
+    const url = URL.createObjectURL(file);
+    const a = h('a', { href: url, download: name, hidden: true });
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+  }
+  await db.kvSet('lastBackup', today);
+  state.lastBackup = today;
+  state.flash = { text: `Backup created: ${name}. Check that it is saved in Files.`, kind: 'ok' };
+  render();
+}
+
+// ---------- Install help ----------
+function viewInstall() {
+  const step = (n, ...text) => h('li', null, h('span', { class: 'n' }, n), h('span', null, text));
+  return h('section', { class: 'stack' },
+    h('a', { class: 'back', href: '#/settings' }, '‹ Settings'),
+    h('h1', null, 'Install on iPhone'),
+    isStandalone()
+      ? h('div', { class: 'card note ok' }, 'You are using the installed Home Screen app. ✓')
+      : h('div', { class: 'card stack' },
+        h('ol', { class: 'steps' },
+          step(1, 'Open this page in ', h('strong', null, 'Safari'), '.'),
+          step(2, 'Tap the ', h('strong', null, 'Share'), ' button (square with an arrow). If you don\'t see it, tap ', h('strong', null, '⋯'), ' first.'),
+          step(3, 'Tap ', h('strong', null, 'Add to Home Screen'), '. If you see "Open as Web App", keep it on.'),
+          step(4, 'Tap ', h('strong', null, 'Add'), ', then open ', h('strong', null, 'Drill'), ' from your Home Screen.'))),
+    h('div', { class: 'card note warn stack' },
+      h('strong', null, 'Your data does not move by itself'),
+      h('p', null, 'On iPhone, the Home Screen app keeps its own data, separate from Safari. To move your progress:'),
+      h('ol', { class: 'msgs' },
+        h('li', null, 'In Safari: Settings → Export backup → Save to Files.'),
+        h('li', null, 'In the Home Screen app: Settings → Import file → choose the backup file.'))),
+    h('div', { class: 'card stack' },
+      h('h2', null, 'Offline'),
+      h('p', null, 'Open the app once with internet. After that it works in airplane mode.'),
+      h('p', { class: 'small muted' }, 'New versions download in the background when you are online. You will see "New version ready".')),
+    h('div', { class: 'card stack' },
+      h('h2', null, 'Keep your data safe'),
+      h('p', null, 'Export a backup every week and keep your interview file in Files or iCloud Drive.')));
+}
+
+// ---------- Offline (service worker) + update notice ----------
+function registerServiceWorker() {
+  if (!('serviceWorker' in navigator)) return;
+  const hadController = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (hadController) showUpdateBar(); // first install: nothing to announce
+  });
+  navigator.serviceWorker.register('sw.js').catch((e) => console.warn('Offline mode not available:', e.message));
+}
+
+function showUpdateBar() {
+  if (document.querySelector('.update-bar')) return;
+  document.body.append(h('div', { class: 'update-bar', role: 'status' },
+    h('span', null, 'New version ready.'),
+    h('button', { class: 'btn primary', onclick: () => location.reload() }, 'Reload')));
 }
 
 function voiceCard() {
@@ -811,12 +914,13 @@ function sampleButton(label) {
 
 /** Validate first; only if everything is valid, save content + slots in one transaction. */
 async function importText(text) {
-  const result = parseAndValidate(text);
+  const result = parseImport(text);
   if (!result.ok) {
     lastImport = { ...result, text: 'Import failed. Nothing was changed.' };
     render();
     return;
   }
+  if (result.kind === 'backup') { await restoreFromBackup(result); return; }
   const data = result.data;
   try {
     await db.saveContent(data, { ...data.slots });
@@ -839,6 +943,34 @@ async function importText(text) {
   db.requestPersistence();
   if ((location.hash || '#/home').startsWith('#/settings')) { render(); return; }
   state.flash = { node: importMessages() }; // show the result on Home
+  lastImport = null;
+  go('#/home');
+}
+
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+async function restoreFromBackup(result) {
+  const when = result.exportedAt ? new Date(result.exportedAt).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' }) : 'unknown date';
+  const ok = confirm(`Restore backup from ${when}?\n\nThis replaces your questions and slot values and restores ${plural(result.progress.length, 'progress record')}. Progress for other questions is kept.`);
+  if (!ok) return;
+  try {
+    await db.restoreBackup({ content: result.data, slots: result.slots, settings: result.settings, progress: result.progress });
+    state.progress = await db.getAllProgress();
+  } catch (e) {
+    lastImport = { ok: false, errors: [`Could not restore: ${e.message}`], warnings: [], text: 'Restore failed. Nothing was changed.' };
+    render();
+    return;
+  }
+  endMock();
+  state.content = result.data;
+  state.slots = { ...result.slots };
+  if (result.settings) state.settings = { ...state.settings, ...result.settings };
+  state.session = null;
+  state.practise = null;
+  lastImport = { ok: true, errors: [], warnings: result.warnings, text: `Backup restored: ${result.data.questions.length} questions, ${plural(result.progress.length, 'progress record')}.` };
+  db.requestPersistence();
+  if ((location.hash || '#/home').startsWith('#/settings')) { render(); return; }
+  state.flash = { node: importMessages() };
   lastImport = null;
   go('#/home');
 }
@@ -869,4 +1001,5 @@ window.addEventListener('hashchange', () => {
     return;
   }
   render();
+  registerServiceWorker();
 })();

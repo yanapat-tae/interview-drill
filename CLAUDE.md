@@ -26,3 +26,5 @@ phone number, email, or any employer-internal information.
   step that keeps old data.
 - Commit with clear messages after each working phase.
 - Design: Aurora / Dark Glass (see `docs/SPEC.md`). Keep text readable (WCAG AA contrast).
+- Offline cache: after changing ANY app file, raise `CACHE_VERSION` in `sw.js` and `APP_VERSION`
+  in `js/app.js` (same number), and add new files to the `FILES` list in `sw.js`. Otherwise iPhones keep the old version.

@@ -1,5 +1,5 @@
 // Unit tests for the pure modules. Open tests/unit.html through a local web server.
-import { parseAndValidate, validateData, fillSlots, slotParts, isUnfilled } from '../js/data.js';
+import { parseAndValidate, validateData, fillSlots, slotParts, isUnfilled, makeBackup, parseImport, backupFileName } from '../js/data.js';
 import { tokenizeAnswer, hiddenSet, isFunctionWord, LEVEL_SHARE } from '../js/fade.js';
 import { applyRating, addDays, todaysReview, mastery } from '../js/review.js';
 import { glossaryMatches } from '../js/glossary.js';
@@ -146,6 +146,23 @@ test('mock: weak questions are picked more often', () => {
 test('mock: timer colours', () => {
   eq([timerLevel(60, 60), timerLevel(61, 60), timerLevel(90, 60), timerLevel(91, 60)], ['normal', 'amber', 'amber', 'red']);
   eq([formatTime(0), formatTime(65.7), formatTime(600)], ['0:00', '1:05', '10:00']);
+});
+
+// ---------- backup ----------
+test('backup round-trip: export then import gives the same data', () => {
+  const progress = new Map([['intro', { id: 'intro', box: 3, due: '2026-11-08', firstRated: '2026-11-01', reviews: 4 }]]);
+  const b = makeBackup({ content: sample, slots: { ...sample.slots, Company: 'Acme' }, settings: { rate: 0.9 }, progress, appVersion: 'x', now: new Date('2026-11-05T10:00:00Z') });
+  const r = parseImport(JSON.stringify(b));
+  ok(r.ok, r.errors.join('; ')); eq(r.kind, 'backup');
+  eq(r.progress, [...progress.values()]); eq(r.slots.Company, 'Acme'); eq(r.settings.rate, 0.9); eq(r.data.questions.length, sample.questions.length);
+  eq(backupFileName('2026-11-05'), 'interview-drill-backup-2026-11-05.json');
+});
+test('normal content file is still accepted by parseImport', () => { const r = parseImport(sampleText); ok(r.ok); eq(r.kind, 'content'); });
+test('broken backup is rejected with clear messages', () => {
+  const b = makeBackup({ content: clone(), slots: {}, settings: {}, progress: new Map([['x', { id: 'x', box: 9, due: 'soon' }]]), appVersion: 'x' });
+  delete b.content.title;
+  const r = parseImport(JSON.stringify(b));
+  ok(!r.ok); ok(r.errors.some((e) => e.includes('Backup content')), r.errors.join()); ok(r.errors.some((e) => e.includes('"box" must be 1–5')));
 });
 
 // ---------- report ----------

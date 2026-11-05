@@ -179,3 +179,67 @@ export function slotParts(text, slots = {}) {
 export function fillSlots(text, slots = {}) {
   return slotParts(text, slots).map((p) => p.text).join('');
 }
+
+// ---------------- Backup ----------------
+// A backup file = the imported content + slot values + settings + practice progress.
+// Recordings are not included (audio is large and stays on the device).
+
+export const BACKUP_FORMAT = 'interview-drill-backup';
+
+export function backupFileName(dateStr) {
+  return `interview-drill-backup-${dateStr}.json`;
+}
+
+export function makeBackup({ content, slots, settings, progress, appVersion, now = new Date() }) {
+  return {
+    backupFormat: BACKUP_FORMAT,
+    backupVersion: 1,
+    exportedAt: now.toISOString(),
+    appVersion,
+    content,
+    slots,
+    settings,
+    progress: [...progress.values()],
+  };
+}
+
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Read an imported file. It can be a normal content file OR a backup.
+ * Returns the same shape as validateData, plus `kind` ('content' | 'backup') and, for backups,
+ * { slots, settings, progress, exportedAt }.
+ */
+export function parseImport(text) {
+  let raw;
+  try {
+    raw = JSON.parse(text);
+  } catch (e) {
+    return { ok: false, errors: [`The file is not valid JSON (${e.message}).`], warnings: [], data: null };
+  }
+  if (!isObj(raw) || raw.backupFormat !== BACKUP_FORMAT) return { ...validateData(raw), kind: 'content' };
+
+  const errors = [];
+  if (raw.backupVersion !== 1) errors.push(`Backup version ${JSON.stringify(raw.backupVersion)} is not supported.`);
+  const inner = validateData(raw.content);
+  errors.push(...inner.errors.map((m) => `Backup content: ${m}`));
+  if (raw.slots !== undefined && !isObj(raw.slots)) errors.push('Backup "slots" must be an object.');
+  if (raw.settings !== undefined && !isObj(raw.settings)) errors.push('Backup "settings" must be an object.');
+  if (!Array.isArray(raw.progress)) errors.push('Backup "progress" must be a list.');
+  else raw.progress.forEach((p, i) => {
+    const where = `Backup progress #${i + 1}`;
+    if (!isObj(p) || !isNonEmptyStr(p.id)) errors.push(`${where}: "id" is missing.`);
+    else if (!Number.isInteger(p.box) || p.box < 1 || p.box > 5) errors.push(`${where} ("${p.id}"): "box" must be 1–5.`);
+    else if (!isStr(p.due) || !DATE_RE.test(p.due)) errors.push(`${where} ("${p.id}"): "due" must be a date YYYY-MM-DD.`);
+  });
+  if (errors.length) return { ok: false, errors, warnings: inner.warnings, data: null, kind: 'backup' };
+
+  return {
+    ok: true, errors, warnings: inner.warnings, kind: 'backup',
+    data: inner.data,
+    slots: isObj(raw.slots) ? { ...raw.slots } : { ...inner.data.slots },
+    settings: isObj(raw.settings) ? { ...raw.settings } : null,
+    progress: raw.progress,
+    exportedAt: isStr(raw.exportedAt) ? raw.exportedAt : '',
+  };
+}

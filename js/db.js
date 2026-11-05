@@ -53,6 +53,18 @@ export const kvSet = (key, value) => run(['kv'], 'readwrite', (s) => { s.kv.put(
 export const saveContent = (content, slots) =>
   run(['kv'], 'readwrite', (s) => { s.kv.put(content, 'content'); s.kv.put(slots, 'slots'); });
 
+/**
+ * Restore a backup in ONE transaction: content, slots, settings and progress records.
+ * Progress records from the backup overwrite records with the same id; other records are kept.
+ */
+export const restoreBackup = ({ content, slots, settings, progress }) =>
+  run(['kv', 'progress'], 'readwrite', (s) => {
+    s.kv.put(content, 'content');
+    s.kv.put(slots, 'slots');
+    if (settings) s.kv.put(settings, 'settings');
+    for (const p of progress) s.progress.put(p);
+  });
+
 export async function getAllProgress() {
   const list = await run(['progress'], 'readonly', (s) => s.progress.getAll());
   return new Map((list || []).map((p) => [p.id, p]));
