@@ -1,0 +1,10 @@
+# Personal data: never commit
+interview-data.json
+*.private.json
+*-backup-*.json
+private/
+recordings/
+
+# System files
+.DS_Store
+Thumbs.db

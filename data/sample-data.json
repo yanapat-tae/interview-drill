@@ -1,0 +1,104 @@
+{
+  "schemaVersion": 1,
+  "title": "Sample Interview Prep (fake data)",
+  "updated": "2026-11-05",
+  "owner": "Alex Sample",
+  "slots": {
+    "Company": "Example Motors",
+    "Role": "Test Engineer",
+    "RoleFocus": "testing brake control units",
+    "Industry": "the automotive industry",
+    "CompanyReason": "[one specific thing about this company]"
+  },
+  "questions": [
+    {
+      "id": "intro",
+      "category": "core",
+      "question": "Please introduce yourself.",
+      "status": "original",
+      "targetSeconds": 60,
+      "answer": [
+        "Hi, my name is Alex Sample. I'm a test engineer with three years of experience in consumer electronics.",
+        "In my current job, I troubleshoot faulty devices and write test procedures for the production line.",
+        "Now I'd like to bring my testing skills to {{Industry}}."
+      ],
+      "keyPoints": [
+        "Name; 3 years, consumer electronics",
+        "Troubleshoot + write test procedures",
+        "Goal: testing in {{Industry}}"
+      ],
+      "storyIds": ["sample-line-fix"],
+      "followUps": [
+        { "q": "What kind of devices do you test?", "hint": "Keep it short and concrete." }
+      ]
+    },
+    {
+      "id": "why-company",
+      "category": "motivation",
+      "question": "Why do you want to join {{Company}}?",
+      "status": "edited",
+      "editNote": "Sample of an edited template answer.",
+      "targetSeconds": 45,
+      "answer": [
+        "I'm interested in {{Company}} because {{CompanyReason}}.",
+        "I believe my detail-oriented approach to testing would help the team, especially in {{RoleFocus}}."
+      ],
+      "keyPoints": [
+        "Specific reason: {{CompanyReason}}",
+        "Detail-oriented testing → {{RoleFocus}}"
+      ],
+      "storyIds": [],
+      "followUps": []
+    },
+    {
+      "id": "strength",
+      "category": "core",
+      "question": "What is your greatest strength?",
+      "status": "new",
+      "targetSeconds": 45,
+      "answer": [
+        "My greatest strength is staying calm when I troubleshoot.",
+        "When something fails, I first prioritize the most likely causes, then test them one by one.",
+        "This helps me find the problem faster and keep the team informed."
+      ],
+      "keyPoints": [
+        "Calm when troubleshooting",
+        "Prioritize likely causes → test one by one",
+        "Faster fix + team informed"
+      ],
+      "storyIds": ["sample-line-fix"],
+      "followUps": []
+    },
+    {
+      "id": "salary",
+      "category": "todo",
+      "question": "What are your salary expectations?",
+      "status": "todo",
+      "editNote": "Sample of a question with no answer yet.",
+      "targetSeconds": 30,
+      "answer": [],
+      "keyPoints": ["Idea: research the market range first"],
+      "storyIds": [],
+      "followUps": []
+    }
+  ],
+  "stories": [
+    {
+      "id": "sample-line-fix",
+      "title": "Production line fault",
+      "when": "2025 · Sample Company",
+      "situation": "A production line stopped because a test station kept failing.",
+      "action": "Checked the wiring, then the test software, and found a wrong configuration value.",
+      "result": "The line restarted the same day."
+    }
+  ],
+  "questionsToAsk": [
+    { "id": "ask-success", "category": "Performance & Expectations", "question": "What does success look like in this role?" },
+    { "id": "ask-next-steps", "category": "Process", "question": "What are the next steps in the hiring process?", "note": "Ask near the end." }
+  ],
+  "glossary": [
+    { "term": "troubleshoot", "th": "หาสาเหตุของปัญหาแล้วแก้ไข" },
+    { "term": "detail-oriented", "th": "ใส่ใจรายละเอียด" },
+    { "term": "prioritize", "th": "จัดลำดับความสำคัญ" }
+  ]
+}
